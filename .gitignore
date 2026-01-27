@@ -1,0 +1,91 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.so
+*.pyd
+*.pyo
+*.egg-info/
+.eggs/
+*.log
+*.out
+
+# === Jupyter ===
+.ipynb_checkpoints/
+*.ipynb~
+*.ipynb_checkpoints/
+
+# === IDE / éditeurs ===
+.vscode/
+.idea/
+*.swp
+
+# === Conda / Environnement ===
+.venv/
+env/
+venv/
+.env
+*.env
+conda-meta/
+*.lock
+*.yaml
+*.yml
+
+# === Données lourdes ===
+*.mp4
+*.mov
+*.avi
+*.jpg
+*.jpeg
+*.png
+*.npy
+*.npz
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+
+# === Checkpoints, modèles ===
+*.ckpt
+*.pt
+*.pth
+*.torchscript
+*.onnx
+
+# === Dossiers spécifiques au projet ===
+/data/
+/dataset/
+/videos_in/
+/videos_out/
+/inference_out/
+/output*/  # ex: output_nlf, output_sathmr
+/logs/
+/runs/
+/weights/
+/yolo_models/
+/pipeline_sathmr/__pycache__/
+/pipeline_nlf/__pycache__/
+/utils_sathmr/__pycache__/
+/models/__pycache__/
+/models/.ipynb_checkpoints/
+
+# === Fichiers Git volumineux ou inutiles ===
+*.rej
+*.orig
+.git/objects/pack/*
+.git/objects/*
+
+# === Captures / Debug ===
+debug_frame*.jpg
+stdout.txt
+
+# === Images internes ===
+/data/images/
+/data/*.png
+/data/*.jpg
+/data/*.mov
+
+# === NFS lock (fichier temporaire système) ===
+.nfs*
+
+# === Canonical verts fichiers ===
+#pipeline_nlf/canonical_verts/*.npy
