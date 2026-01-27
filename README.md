@@ -3,7 +3,7 @@
 **Real-time markerless upper-body kinematics from a single 360° camera**, using
 **Neural Localizer Fields (NLF)** and **YOLO**.
 
-This repository provides a lightweight, reproducible pipeline for running **live pose estimation** from equirectangular video streams (e.g. Ricoh Theta), with a focus on research and real-time experimentation.
+Repository: [https://github.com/mathisdhaene/pano2kinematics](https://github.com/mathisdhaene/pano2kinematics)
 
 ---
 
@@ -15,19 +15,6 @@ This repository provides a lightweight, reproducible pipeline for running **live
 * NLF-based anatomical landmark regression
 * GStreamer shared-memory input
 * No markers, no MoCap system
-
----
-
-## Repository scope
-
-At the moment, this repository focuses on **live inference only**.
-
-There are **two entry-point scripts**:
-
-* `live_cpu.py` — CPU-only inference
-* `live_gpu.py` — GPU-accelerated inference
-
-All other code supports these two scripts.
 
 ---
 
@@ -85,27 +72,9 @@ conda install -n base -c conda-forge mamba
 
 ### 1.4 Create the environment
 
-Create `environment.yml`:
+The repository already provides a ready-to-use environment file.
 
-```yaml
-name: py10
-channels:
-  - conda-forge
-dependencies:
-  - python=3.10
-  - pip
-  - numpy
-  - scipy
-  - matplotlib
-  - scikit-learn
-  - joblib
-  - termcolor
-  - trimesh
-  - opencv
-  - tensorboard
-```
-
-Create and activate:
+From the repository root:
 
 ```bash
 mamba env create -f environment.yml
@@ -236,8 +205,6 @@ pipeline_nlf/canonical_verts/
 └── smplx.npy
 ```
 
-These are static assets originating from the NLF ecosystem and are required at runtime.
-
 ---
 
 ## 5. EquiLib (projection)
@@ -246,13 +213,20 @@ This repository includes a local copy of **EquiLib** for equirectangular-to-pers
 
 👉 [https://github.com/haruishi43/equilib](https://github.com/haruishi43/equilib)
 
-EquiLib is **vendored directly** in the source tree (not installed via `pip`) to ensure reproducibility.
+EquiLib is vendored directly in the source tree to ensure reproducibility.
 
 ---
 
 ## 6. Running the pipeline (live)
 
-Both scripts share the **same interface**.
+There are **two entry-point scripts**:
+
+* `live_cpu.py`
+* `live_gpu.py`
+
+Both share the same interface.
+
+---
 
 ### CPU version
 
@@ -307,6 +281,6 @@ Users are encouraged to cite the original works when using these components in a
 
 ## Project status
 
-This repository is **actively used for research and experimentation**.
+This repository is used for ongoing research and experimentation.
 The API and scripts may evolve as the pipeline is refined.
 
