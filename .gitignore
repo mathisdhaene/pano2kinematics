@@ -27,8 +27,6 @@ venv/
 *.env
 conda-meta/
 *.lock
-*.yaml
-*.yml
 
 # === Données lourdes ===
 *.mp4

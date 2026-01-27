@@ -1,0 +1,43 @@
+# run: conda env create --file environment_comfortable_py10.yml
+name: py10
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - cachetools
+  - av<9
+  - cython
+  - ezc3d
+  - ffmpeg
+  - imageio
+  - matplotlib
+  - mkl
+  - trimesh
+  - numba
+  - numpy<2.0
+  - libiconv
+  - pandas
+  - pillow
+  - scikit-image
+  - scikit-learn
+  - scikit-sparse
+  - tqdm
+  - mayavi>=4.8
+  - pyside6==6.7.1
+  - ffmpeg-python
+  - pip:
+      - addict
+      - tensorflow==2.15
+      - tensorflow-hub
+      - chumpy
+      - embreex
+      - einops
+      - imageio-ffmpeg
+      - importlib_resources
+      - jpeg4py
+      - more_itertools
+      - opencv-python
+      - pyrender
+      - tetgen
+      - pymeshfix

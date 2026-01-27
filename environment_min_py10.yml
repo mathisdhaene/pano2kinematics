@@ -1,0 +1,21 @@
+name: py10
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - joblib
+  - termcolor
+  - matplotlib
+  - scikit-learn
+  - trimesh
+  - opencv
+  - tensorboard
+  - pip:
+      - chumpy
+      - smplx
+      - pyrender==0.1.45
+      - transformers
+      - opencv-python
