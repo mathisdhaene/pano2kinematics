@@ -35,7 +35,6 @@ conda-meta/
 *.jpg
 *.jpeg
 *.png
-*.npy
 *.npz
 *.h5
 *.hdf5
@@ -85,5 +84,3 @@ stdout.txt
 # === NFS lock (fichier temporaire système) ===
 .nfs*
 
-# === Canonical verts fichiers ===
-#pipeline_nlf/canonical_verts/*.npy
