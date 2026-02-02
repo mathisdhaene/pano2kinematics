@@ -1,0 +1,14 @@
+numpy
+scipy
+opencv-python
+matplotlib
+torch
+torchvision
+ultralytics
+transformers
+termcolor
+scikit-learn
+trimesh
+pyrender==0.1.45
+chumpy
+smplx

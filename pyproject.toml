@@ -1,0 +1,23 @@
+[project]
+requires-python = ">=3.10,<3.13"
+name = "pano2kinematics"
+version = "0.1.0"
+dependencies = [
+  "numpy",
+  "scipy",
+  "joblib",
+  "termcolor",
+  "matplotlib",
+  "scikit-learn",
+  "trimesh",
+  "opencv-python",
+  "tensorboard",
+  "transformers",
+  "pyrender==0.1.45",
+  "smplx",
+  "ultralytics",
+  # add torch/torchvision carefully (see note below)
+]
+
+[tool.uv]
+# optional: if you want uv to always prefer wheels, etc.
