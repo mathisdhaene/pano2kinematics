@@ -54,7 +54,10 @@ import yaml
 
 import torchvision.transforms as T
 import torch._dynamo
-from mpl_toolkits.mplot3d import Axes3D  # noqa
+try:
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+except Exception:
+    Axes3D = None
 import importlib.util
 from pipeline_nlf.utils import *
 # ======================================

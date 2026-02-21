@@ -12,7 +12,10 @@ import torchvision.transforms as T
 import torch.nn.functional as F
 import math
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
+try:
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+except Exception:
+    Axes3D = None
 from collections import defaultdict
 
 import sys
@@ -105,6 +108,12 @@ def plot_keypoints_3d(keypoints):
     Parameters:
     keypoints: List or array of shape (N, 3) where N is the number of keypoints and each keypoint is [X, Y, Z].
     """
+    if Axes3D is None:
+        raise RuntimeError(
+            "3D plotting requires mpl_toolkits.mplot3d. "
+            "Your matplotlib installation is inconsistent."
+        )
+
     # Create a 3D figure
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')

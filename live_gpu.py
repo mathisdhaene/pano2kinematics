@@ -55,7 +55,10 @@ import yaml
 import torchvision.transforms as T
 import torch._dynamo
 from pipeline_nlf.utils import *
-from mpl_toolkits.mplot3d import Axes3D  # noqa
+try:
+    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
+except Exception:
+    Axes3D = None
 from equilib.equi2pers.torch_impl import run as equi2pers_run
 from equilib.numpy_utils.rotation import create_rotation_matrices  # noqa
 # ======================================
