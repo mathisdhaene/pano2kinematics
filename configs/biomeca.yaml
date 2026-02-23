@@ -1,0 +1,23 @@
+# This dictionnary contains biorob.osim model markers (from Sonia-Laure).
+# The human model is SMPL. (the indexes would change with a model such as SMPL-X).
+
+ACD: 4271
+CLAD: 4779
+CLAG: 1297
+MAN: 3171
+XYP: 3077
+T8: 3014
+MTACM: 5273
+MTACB: 4223
+MTACL: 5287
+MTHA: 5336
+MTHP: 4873
+MTBA: 4978
+MTBP: 4794
+EL: 5208
+EM: 5153
+PSU: 5567
+PSR: 5691
+MC5: 5524
+MC2: 5456
+C7: 3470

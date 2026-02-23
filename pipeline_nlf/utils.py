@@ -501,8 +501,8 @@ def compute_camera_parameters(out_width, out_height, fov, yaw, pitch):
     ], dtype=np.float32)
     
     #R = R_pitch @ R_yaw
-   #R = R_yaw @ R_pitch
-    R = R_pitch @ R_yaw
+    R = R_yaw @ R_pitch
+    #R = R_pitch @ R_yaw
 
     # Translation vector
     t = np.zeros((3, 1))  # No translation in this case
