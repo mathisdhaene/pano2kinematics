@@ -72,20 +72,22 @@ def matmul(m: torch.Tensor, G: torch.Tensor, R: torch.Tensor) -> torch.Tensor:
 def convert_grid(
     M: torch.Tensor, h_equi: int, w_equi: int, method: str = "robust"
 ) -> torch.Tensor:
+    pi_local = pi.to(device=M.device, dtype=M.dtype)
+
     # convert to rotation
     phi = torch.asin(M[..., 2] / torch.norm(M, dim=-1))
     theta = torch.atan2(M[..., 1], M[..., 0])
 
     if method == "robust":
-        ui = (theta - pi) * w_equi / (2 * pi)
-        uj = (phi - pi / 2) * h_equi / pi
+        ui = (theta - pi_local) * w_equi / (2 * pi_local)
+        uj = (phi - pi_local / 2) * h_equi / pi_local
         ui += 0.5
         uj += 0.5
         ui %= w_equi
         uj %= h_equi
     elif method == "faster":
-        ui = (theta - pi) * w_equi / (2 * pi)
-        uj = (phi - pi / 2) * h_equi / pi
+        ui = (theta - pi_local) * w_equi / (2 * pi_local)
+        uj = (phi - pi_local / 2) * h_equi / pi_local
         ui += 0.5
         uj += 0.5
         ui = torch.where(ui < 0, ui + w_equi, ui)

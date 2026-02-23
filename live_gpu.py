@@ -549,7 +549,7 @@ def main():
                         input_tensor.size(3),
                         FOV,            # <---- USE dynamic FOV
                         rotate_frame,
-                        -pitch
+                        pitch
                     )
 
                 R_list.append(R.tolist())
