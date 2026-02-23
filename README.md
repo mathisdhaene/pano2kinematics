@@ -251,6 +251,8 @@ python3 live_cpu.py \
 python3 live_gpu.py \
   --live \
   --shm-socket /tmp/theta_bgr.sock \
+  --frame-width 3840 \
+  --frame-height 1920 \
   --fps 30 \
   --device cuda \
   --yolo weights/yolo_models/yolo11m-pose.pt \
@@ -283,4 +285,3 @@ Users are encouraged to cite the original works when using these components in a
 
 This repository is used for ongoing research and experimentation.
 The API and scripts may evolve as the pipeline is refined.
-

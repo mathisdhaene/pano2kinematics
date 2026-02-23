@@ -94,6 +94,8 @@ def build_parser():
     # NEW: live mode
     p.add_argument("--live", action="store_true", help="Read from shmsrc via GstShmReader")
     p.add_argument("--shm-socket", default="/tmp/theta_bgr.sock", help="Base path to shmsink socket")
+    p.add_argument("--frame-width", type=int, default=3840, help="Equirectangular frame width")
+    p.add_argument("--frame-height", type=int, default=1920, help="Equirectangular frame height")
     p.add_argument("--display-only", action="store_true",
                help="Do not write videos/TRC; show ori_img live")
 
@@ -377,7 +379,7 @@ def main():
     reader = None
     cap = None
     if args.live:
-        reader = GstShmReader(args.shm_socket, w=3840, h=1920, fps=args.fps)
+        reader = GstShmReader(args.shm_socket, w=args.frame_width, h=args.frame_height, fps=args.fps)
     else:
         cap = cv2.VideoCapture(str(input_path))
         if not cap.isOpened():
@@ -386,7 +388,7 @@ def main():
     # Writers (disabled in display-only mode)
     if not display_only:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(str(output_main), fourcc, args.fps, (3840, 1920))
+        out = cv2.VideoWriter(str(output_main), fourcc, args.fps, (args.frame_width, args.frame_height))
         pseudo_out = cv2.VideoWriter(str(out_pseudo), fourcc, args.fps, (256, 256))
     else:
         out = None
@@ -520,7 +522,7 @@ def main():
                         break
 
                 if bbox is not None:
-                    FOV = compute_dynamic_fov_from_bbox(bbox)
+                    FOV = compute_dynamic_fov_from_bbox(bbox, img_w=args.frame_width)
                 else:
                     FOV = 55.0   # fallback
                 with torch.inference_mode():
@@ -600,7 +602,9 @@ def main():
 
 
                 if poses3d.shape[0] > 0:
-                    projected_2d = project_mesh_from_pseudo_to_equi(vertices3d, rotate_frame, pitch, 3840, 1920)
+                    projected_2d = project_mesh_from_pseudo_to_equi(
+                        vertices3d, rotate_frame, pitch, args.frame_width, args.frame_height
+                    )
                     projected_2d = np.array(projected_2d)
                     unnormalized_tensor = unNormalize(input_tensor).cpu()
                     ori_img = preprocessed_equi_rendering.squeeze(0).permute(1, 2, 0).cpu().numpy()
@@ -611,7 +615,7 @@ def main():
                         cv2.circle(ori_img, center, 5, (0, 0, 255), -1)
 
                 if display_only:
-                    preview = cv2.resize(ori_img, (3840, 1920))
+                    preview = cv2.resize(ori_img, (args.frame_width, args.frame_height))
                     cv2.imshow("markerless_live", preview)
                     if (cv2.waitKey(1) & 0xFF) == 27:
                         break
