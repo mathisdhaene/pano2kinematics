@@ -12,10 +12,7 @@ import torchvision.transforms as T
 import torch.nn.functional as F
 import math
 import matplotlib.pyplot as plt
-try:
-    from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-except Exception:
-    Axes3D = None
+from mpl_toolkits.mplot3d import Axes3D
 from collections import defaultdict
 
 import sys
@@ -34,9 +31,7 @@ from equilib.torch_utils import (
     create_global2camera_rotation_matrix,
 )
 
-unNormalize = transforms.Normalize(
-        mean=-np.array([0.485,0.456,0.406]) / np.array([0.229,0.224,0.225]),
-        std=1 / np.array([0.229,0.224,0.225]))
+
 
 
 def preprocess(img: np.ndarray, device: str = "cuda") -> torch.Tensor:
@@ -108,12 +103,6 @@ def plot_keypoints_3d(keypoints):
     Parameters:
     keypoints: List or array of shape (N, 3) where N is the number of keypoints and each keypoint is [X, Y, Z].
     """
-    if Axes3D is None:
-        raise RuntimeError(
-            "3D plotting requires mpl_toolkits.mplot3d. "
-            "Your matplotlib installation is inconsistent."
-        )
-
     # Create a 3D figure
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
@@ -641,52 +630,55 @@ def detect_t_pose(result, t_pose_person, t_pose_threshold, t_pose_duration, widt
 
 
 # For a given result, and index of a person, returns a boolean True and the yaw angle of the center of its bounding box         
-def align_equi_to_tposed(result, t_pose_person):
-    if not result or result.boxes is None:
-        return False, 0.0, 0.0
+def align_equi_to_tposed(result, t_pose_person, frame_width=3840, frame_height=1920):
+    
+    if result and result.boxes is not None:
+        boxes = result.boxes.xywh.cpu().numpy()
 
-    w_img, h_img = 3840, 1920
+        # Check if track IDs exist before accessing them
+        if result.boxes.id is not None:
+            track_ids = result.boxes.id.int().cpu().tolist()
+        else:
+            track_ids = [-1] * len(boxes)  # Assign -1 if no track ID exists
 
-    boxes = result.boxes.xywh.cpu().numpy()
+        keypoints = result.keypoints.xy.cpu().numpy()
 
-    # Track IDs
-    track_ids = (
-        result.boxes.id.int().cpu().tolist()
-        if result.boxes.id is not None
-        else [-1] * len(boxes)
-    )
+        print(f"Frame 1: Found {len(boxes)} persons, Track IDs: {track_ids}")
 
-    keypoints = result.keypoints.xy.cpu().numpy()
+        for idx, keypoint in enumerate(keypoints):
+            #print('idx', idx)
+            print(track_ids[idx],' track_ids[idx]')
+            if track_ids[idx] == t_pose_person:
+                #print('idx_found', idx)
+                #print('track_ids', track_ids[idx])
+                # Get bounding box coordinates
+                boxes = result.boxes.xywh.cpu().numpy()
+                
+                x, y, w, h = boxes[idx]
+                #cx, cy = keypoint[0][0], keypoint[0][1]
+                # Calculate the center of the bounding box
+                
+                #print('x', x)
+                cx, cy = x , y 
+                cy = cy + h/4
+                #print('cx', cx)
+                #print('w', w)
+                new_yaw = (cx / frame_width) * 360 - 180
+                pitch = -(cy / frame_height) * 180 + 90
+                #pitch = (cy / 1920.0) * 180.0 - 90.0
+                print(f"[TRACK] cy={cy:.1f}  pitch(deg)={pitch:.1f}")
 
-    for idx in range(len(keypoints)):
-        if track_ids[idx] != t_pose_person:
-            continue
-
-        kp = keypoints[idx]
-
-        # Shoulder indices (YOLOv8/YOLO11 standard)
-        L = kp[5]   # left shoulder
-        R = kp[6]   # right shoulder
-
-        cx = R[0]
-        cy = R[1]
-
-        yaw_deg   = (cx / w_img) * 360.0 - 180.0
-        pitch_deg = -(cy / h_img) * 180.0 + 90.0
-
-        print(f"[ALIGN] shoulders cx={cx:.1f}, cy={cy:.1f}, yaw={yaw_deg:.1f}, pitch={pitch_deg:.1f}")
-
-        return True, yaw_deg, pitch_deg
-
-    return False, 0.0, 0.0
-
+                rotate_frame = new_yaw
+                #print(new_yaw)
+                
+                return True, rotate_frame, pitch
 
 
 
             
 # If no one is detected, returns the previous camera extrinsic parameters not to skip frames.
 # Would be great to have a controlable 'safe zone', as by default bitetrack keeps the track of an id for a maximum of 30 consecutive frames if it disappears.
-def main_tracking(result, id_a_suivre, rotate_frame, pitch): 
+def main_tracking(result, id_a_suivre, rotate_frame, pitch, frame_width=3840, frame_height=1920): 
     if result and result.boxes is not None and id_a_suivre is not None:
         boxes = result.boxes.xywh.cpu().numpy()
 
@@ -701,16 +693,15 @@ def main_tracking(result, id_a_suivre, rotate_frame, pitch):
         for idx, keypoint in enumerate(keypoints):
             if track_ids[idx] == id_a_suivre:
                 # Get bounding box coordinates
+                x, y, w, h = boxes[idx]
+                y = y - h/6
+                new_yaw = (x / frame_width) * 360 - 180
+                pitch = -(y / frame_height) * 180 + 90
+                print(f"[TRACK] cy={y:.1f}  pitch(deg)={pitch:.1f}")
 
-                L = keypoints[idx][5]   # [x,y] left shoulder
-                R = keypoints[idx][6]   # [x,y] right shoulder
-
-                cx = R[0]
-                cy = R[1]
-
-                yaw = (cx / 3840) * 360 - 180
-                pitch = -(cy / 1920) * 180 + 90
-
+                #pitch = (y / 1920.0) * 180.0 - 90.0
+                rotate_frame += new_yaw
+                pitch
                 return rotate_frame, pitch
 
     # If no return was reached, return 0
@@ -718,131 +709,6 @@ def main_tracking(result, id_a_suivre, rotate_frame, pitch):
             
 
 
-
-
-def compute_yaw_pitch_from_vertices(vertices3d):
-    """
-    Estimate yaw/pitch offsets (in degrees) from NLF 3D vertices.
-
-    vertices3d: np.ndarray of shape (M, 3), camera-frame coordinates.
-    We use the centroid of all markers as a proxy for the body center.
-
-    Returns:
-        delta_yaw_deg, delta_pitch_deg
-        (angles telling us how far the subject is from the camera center)
-    """
-    import numpy as np
-
-    v = np.asarray(vertices3d, dtype=np.float32)
-
-    if v.ndim != 2 or v.shape[1] != 3:
-        return 0.0, 0.0
-
-    # Use centroid of all markers as tracking anchor
-    center = np.nanmean(v, axis=0)  # (3,)
-
-    if not np.all(np.isfinite(center)):
-        return 0.0, 0.0
-
-    x, y, z = center
-    norm = float(np.linalg.norm(center))
-    if norm < 1e-6 or not np.isfinite(norm):
-        return 0.0, 0.0
-
-    # Angles in camera frame:
-    # - yaw: horizontal angle (x vs z)
-    # - pitch: vertical angle (y vs radius)
-    yaw = np.arctan2(x, z)
-    pitch = np.arcsin(np.clip(y / norm, -1.0, 1.0))
-
-    yaw_deg = float(np.degrees(yaw))
-    pitch_deg = float(np.degrees(pitch))
-
-    return yaw_deg, pitch_deg
-
-
-def compute_yaw_pitch_from_2d(pose2d, img_w=256, img_h=256):
-    """
-    pose2d: numpy array of shape (N,2) with [x,y] in pseudo-camera coordinates.
-    Returns:
-        delta_yaw_deg, delta_pitch_deg
-    """
-
-    import numpy as np
-
-    # Basic validity check
-    if pose2d is None or len(pose2d.shape) != 2 or pose2d.shape[1] != 2:
-        print("[TRACK-2D] pose2d invalid shape:", None if pose2d is None else pose2d.shape)
-        return 0.0, 0.0
-
-    # Try torso-based tracking: shoulders + hips
-    torso_indices = [5, 6, 11, 12]  # Works with YOLO indexing & NLF output structure
-    
-    try:
-        # Filter indices that are in range
-        valid_indices = [i for i in torso_indices if i < pose2d.shape[0]]
-        torso_pts = pose2d[valid_indices]  # shape (K,2)
-
-        # Remove invalid values (NaN)
-        torso_pts = torso_pts[np.all(np.isfinite(torso_pts), axis=1)]
-
-        if len(torso_pts) == 0:
-            raise ValueError("No valid torso keypoints")
-
-        C = torso_pts.mean(axis=0)  # shape (2,)
-    except Exception:
-        # Fallback to centroid of all points
-        pts = pose2d[np.all(np.isfinite(pose2d), axis=1)]
-        if len(pts) == 0:
-            print("[TRACK-2D] No valid 2D pts, returning 0.")
-            return 0.0, 0.0
-        C = pts.mean(axis=0)
-
-    # At this point, C **must** be a 1D array of shape (2,)
-    C = np.asarray(C).reshape(2,)   # <- FIX: FORCE shape (2,)
-
-    cx, cy = float(C[0]), float(C[1])
-
-    # Normalized offsets: [-1,1]
-    dx = (cx - img_w/2) / (img_w/2)
-    dy = (cy - img_h/2) / (img_h/2)
-
-    # Convert to yaw/pitch deltas.
-    # NOTE: signs will be tuned after test
-    delta_yaw_deg   =  dx * 10.0        # horizontal
-    delta_pitch_deg = -dy * 10.0        # vertical (image y is downward)
-
-    # Debug: print small info occasionally
-    # print(f"[TRACK-2D] cx={cx:.1f}, cy={cy:.1f}, dx={dx:.3f}, dy={dy:.3f} → yaw={delta_yaw_deg:.2f}, pitch={delta_pitch_deg:.2f}")
-
-    return delta_yaw_deg, delta_pitch_deg
-
-def compute_yaw_pitch_from_shoulder_2d(pose2d, idx_shoulder,
-                                       img_w=256, img_h=256,
-                                       gain_yaw=10.0, gain_pitch=10.0):
-    """
-    Compute yaw and pitch corrections so that the chosen shoulder keypoint
-    stays centered in the pseudo-camera.
-    """
-
-    import numpy as np
-
-    if pose2d is None or pose2d.ndim != 2 or pose2d.shape[1] != 2:
-        return 0.0, 0.0
-
-    try:
-        x, y = pose2d[idx_shoulder]
-        if not np.isfinite(x) or not np.isfinite(y):
-            return 0.0, 0.0
-    except:
-        return 0.0, 0.0
-
-    # Normalized offsets relative to image center
-    dx = (x - img_w/2) / (img_w/2)
-    dy = (y - img_h/2) / (img_h/2)
-
-    # Convert to angular offsets
-    delta_yaw   =  dx * gain_yaw
-    delta_pitch = -dy * gain_pitch   # image y grows downward → pitch flips
-
-    return delta_yaw, delta_pitch
+unNormalize = transforms.Normalize(
+        mean=-np.array([0.485,0.456,0.406]) / np.array([0.229,0.224,0.225]),
+        std=1 / np.array([0.229,0.224,0.225]))

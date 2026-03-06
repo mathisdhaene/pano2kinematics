@@ -41,8 +41,14 @@ import socket
 # Socket Setup
 HOST = '127.0.0.1'
 PORT = 5555
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST, PORT))
+sock = None
+try:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((HOST, PORT))
+    print(f"[Socket] Connected -> RTOSIM {HOST}:{PORT}")
+except Exception as e:
+    print(f"[Socket] WARNING: could not connect to RTOSIM: {e}")
+    sock = None
 
 import torch
 import numpy as np
@@ -84,7 +90,7 @@ def build_parser():
     p.add_argument("--fps", type=float, default=30.0, help="FPS des sorties")
     p.add_argument("--device", default="cuda:0", help="cuda:0 / cpu")
     p.add_argument("--max-frames", type=int, default=3000, help="Limiter le nb de frames")
-    p.add_argument("--yolo", default="yolo_models/yolo11m-pose.pt",
+    p.add_argument("--yolo", default="yolo_models/yolo11x-pose.pt",
                    help="Chemin du modèle YOLO pose")
     p.add_argument("--tracker", default="bytetrack.yaml", help="Tracker pour YOLO")
     p.add_argument("--bio-cfg", default="configs/biomeca.yaml", help="YAML biomécanique")
@@ -98,6 +104,8 @@ def build_parser():
     p.add_argument("--frame-height", type=int, default=1920, help="Equirectangular frame height")
     p.add_argument("--display-only", action="store_true",
                help="Do not write videos/TRC; show ori_img live")
+    p.add_argument("--no-video", action="store_true",
+               help="Disable all video writing outputs")
 
     return p
 
@@ -126,7 +134,7 @@ def compute_dynamic_fov_from_bbox(bbox, img_w=3840):
 # -------------------- Recorder (unchanged) --------------------
 
 class YOLOTrackedRecorder:
-    def __init__(self, model, out_path, fps=30.0, device="cuda:0", tracker="bytetrack.yaml", kp_conf_thresh=None):
+    def __init__(self, model, out_path, fps=30.0, device="cuda:0", tracker="botsort.yaml", kp_conf_thresh=None):
         self.model = model
         self.out_path = str(out_path)
         self.fps = float(fps)
@@ -344,6 +352,7 @@ def main():
         cv2.resizeWindow("markerless_live", 960, 480)
 
     display_only = args.display_only
+    write_video = not args.display_only and not args.no_video
 
     input_path = Path(args.input_path)
     output_main = Path(args.output_path)
@@ -356,6 +365,9 @@ def main():
     ensure_parent_dir(out_tracked)
     ensure_parent_dir(out_pseudo)
     ensure_parent_dir(out_trc)
+
+    with open(args.bio_cfg, "r") as f:
+        cfg_bio = yaml.safe_load(f)
 
 
 
@@ -371,10 +383,6 @@ def main():
     model_yolo = YOLO(args.yolo)
     model_yolo2 = YOLO(args.yolo)
 
-    rec = None
-    if not display_only:
-        rec = YOLOTrackedRecorder(model_yolo, out_tracked, fps=args.fps, device=device, tracker=args.tracker)
-
     # ---- Video source ----
     reader = None
     cap = None
@@ -385,8 +393,8 @@ def main():
         if not cap.isOpened():
             raise FileNotFoundError(f"Impossible d’ouvrir la vidéo d’entrée: {input_path}")
 
-    # Writers (disabled in display-only mode)
-    if not display_only:
+    # Writers (disabled in display-only or --no-video mode)
+    if write_video:
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(str(output_main), fourcc, args.fps, (args.frame_width, args.frame_height))
         pseudo_out = cv2.VideoWriter(str(out_pseudo), fourcc, args.fps, (256, 256))
@@ -395,7 +403,7 @@ def main():
         pseudo_out = None
 
     rec = None
-    if not display_only:
+    if write_video:
         rec = YOLOTrackedRecorder(model_yolo, out_tracked, fps=args.fps, device=device, tracker=args.tracker)
 
 
@@ -419,6 +427,7 @@ def main():
     # Export TRC / rotations
     vertices_list = []
     R_list = []
+    timestamps_s = []
 
     # NLF precomputes (unchanged)
     cano_verts = np.load("pipeline_nlf/canonical_verts/smpl.npy")
@@ -484,13 +493,17 @@ def main():
                         rec.process(frame)
 
                     result1 = model_yolo.track(frame, persist=True, device=device, tracker=args.tracker, save=False)[0]
-                    initialisation, rotate_frame, pitch = align_equi_to_tposed(result1, t_pose_person)
+                    initialisation, rotate_frame, pitch = align_equi_to_tposed(
+                        result1, t_pose_person, args.frame_width, args.frame_height
+                    )
                 elif image_id == 1:
                     result2 = model_yolo2.track(shifted_image_180, persist=True, device=device, tracker=args.tracker, save=False)[0]
                     if rec is not None:
                         rec.process(frame)
 
-                    initialisation, rotate_frame, pitch = align_equi_to_tposed(result2, t_pose_person)
+                    initialisation, rotate_frame, pitch = align_equi_to_tposed(
+                        result2, t_pose_person, args.frame_width, args.frame_height
+                    )
                     rotate_frame += 180
 
             elif tpose_found and initialisation and id_a_suivre is None:
@@ -501,12 +514,14 @@ def main():
                 track_start = time.time()
                 county += 1
 
-                result = model_yolo.track(frame, persist=True, device=device, tracker=args.tracker, save=False)[0]
+                result = model_yolo.track(frame, persist=True, device=device, tracker=args.tracker, show=False)[0]
                 if rec is not None:
                     rec.process(frame)
 
                 track_end = time.time()
-                rotate_frame, pitch = main_tracking(result, id_a_suivre, rotate_frame, pitch)
+                rotate_frame, pitch = main_tracking(
+                    result, id_a_suivre, rotate_frame, pitch, args.frame_width, args.frame_height
+                )
 
                 temps_avant_preprocess = time.time()
                 preprocessed_equi_rendering = preprocess(framee, device)
@@ -516,10 +531,17 @@ def main():
                 start_camera = time.time()
                 # ---- Dynamic FOV based on bbox size ----
                 bbox = None
-                for idx, tid in enumerate(result.boxes.id.int().cpu().tolist()):
-                    if tid == id_a_suivre:
-                        bbox = result.boxes.xywh.cpu().numpy()[idx]
-                        break
+                track_ids = (
+                    result.boxes.id.int().cpu().tolist()
+                    if (result is not None and result.boxes is not None and result.boxes.id is not None)
+                    else []
+                )
+                if track_ids:
+                    boxes_xywh = result.boxes.xywh.cpu().numpy()
+                    for idx, tid in enumerate(track_ids):
+                        if tid == id_a_suivre:
+                            bbox = boxes_xywh[idx]
+                            break
 
                 if bbox is not None:
                     FOV = compute_dynamic_fov_from_bbox(bbox, img_w=args.frame_width)
@@ -553,8 +575,7 @@ def main():
                         rotate_frame,
                         pitch
                     )
-
-                R_list.append(R.tolist())
+                print('rotate_frame', rotate_frame)
 
                 torch.cuda.synchronize() if "cuda" in device else None
                 inference_start = time.time()
@@ -563,11 +584,12 @@ def main():
                         input_tensor,
                         precomputed_box,
                         weights_subset,
-                        default_fov_degrees=35,
+                        default_fov_degrees=55,
                         internal_batch_size=1,
                         num_aug=1,
                         antialias_factor=1
                     )
+
                 torch.cuda.synchronize() if "cuda" in device else None
 
                 poses3d = pred["poses3d"][0]
@@ -596,9 +618,7 @@ def main():
                     if pseudo_frame.shape[1] != 256 or pseudo_frame.shape[0] != 256:
                         pseudo_frame = cv2.resize(pseudo_frame, (256, 256))
                     pseudo_out.write(pseudo_frame)
-                    print('PITCHHHHHHHHHHHHH')
-                    print('')
-                    print(pitch)
+
 
 
                 if poses3d.shape[0] > 0:
@@ -610,6 +630,12 @@ def main():
                     ori_img = preprocessed_equi_rendering.squeeze(0).permute(1, 2, 0).cpu().numpy()
                     ori_img = np.clip(ori_img * 255.0, 0, 255).astype(np.uint8)
                     vertices_list.append(vertices3d.tolist())
+                    R_list.append(R.tolist())
+                    if args.live or cap is None:
+                        t_norm = float(len(timestamps_s)) / float(args.fps)
+                    else:
+                        t_norm = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
+                    timestamps_s.append(float(t_norm))
                     for point in projected_2d:
                         center = tuple(int(x) for x in np.round(point).tolist())
                         cv2.circle(ori_img, center, 5, (0, 0, 255), -1)
@@ -622,26 +648,28 @@ def main():
                 
 # assumes vertices3d already in meters; if it's in millimeters, see below
                 vertices3d = vertices3d  / 1000.0
-                print(vertices3d)
                 V_trans = [(x,y,z) for (x, y, z) in vertices3d]
                 V_cam = np.asarray(V_trans, dtype=np.float32) 
                 R = np.asarray(R, dtype=np.float32)        # shape (3,3)
 
                 V_world = V_cam @ R.T 
-                print(V_world)
-                print(V_world)
                 print('end')
                 V_world = [(-z, -y + 0.75, -x) for (x, y, z) in V_world]
                 V_world = np.asarray(V_world, dtype=np.float32)
-                sock.sendall(V_world.astype(np.float32).ravel(order="C").tobytes())
-                print(f"Sent frame {county} marker data to RTOSIM")
+                if sock is not None:
+                    try:
+                        sock.sendall(V_world.astype(np.float32).ravel(order="C").tobytes())
+                        print(f"Sent frame {county} marker data to RTOSIM")
+                    except Exception as e:
+                        print(f"[Socket] WARNING: failed to send frame {county}: {e}")
 
                 total_end_time = time.time()
                 total_duration = total_end_time - total_start_time
                 fps = 1 / total_duration if total_duration > 0 else 0
                 print(count)
 
-        rec.close()
+        if rec is not None:
+            rec.close()
     finally:
         if cap is not None:
             cap.release()
@@ -651,12 +679,34 @@ def main():
             out.release()
         if pseudo_out is not None:
             pseudo_out.release()
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
         cv2.destroyAllWindows()
 
 
     print('county', county)
     # TRC à côté de la sortie principale
-    #generate_trc_file_subset(vertices_list, cfg_bio, str(out_trc), int(args.fps), R_list)
+    if len(vertices_list) > 0:
+        print("[TRC] Writing TRC world frame ...")
+        generate_trc_file_world_frame(
+            vertices_list,
+            cfg_bio,
+            out_trc,
+            timestamps_s[:len(vertices_list)],
+            R_list,
+            units="mm",
+            world_offset_y=0.75
+        )
+        print(f"[TRC] Done -> {out_trc}")
+    else:
+        print("[TRC] Skipped: no vertices were produced.")
 
 if __name__ == "__main__":
     main()
