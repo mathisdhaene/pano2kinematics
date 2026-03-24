@@ -32,7 +32,6 @@ Run (offline, unchanged):
 
 import argparse
 from pathlib import Path
-import os
 import time
 from collections import defaultdict
 
@@ -54,19 +53,33 @@ import torch
 import numpy as np
 import cv2
 from ultralytics import YOLO
-from torchvision import transforms
-from PIL import Image
 import yaml
 
-import torchvision.transforms as T
 import torch._dynamo
-from pipeline_nlf.utils import *
+from pipeline_nlf.live import (
+    GstShmReader,
+    YOLOTrackedRecorder,
+    derive_side_outputs,
+    ensure_parent_dir,
+    project_mesh_from_pseudo_to_equi,
+)
+from pipeline_nlf.utils import (
+    align_equi_to_tposed,
+    compute_camera_parameters,
+    detect_t_pose,
+    generate_trc_file_world_frame,
+    main_tracking,
+    preprocess,
+    preprocess_for_nlf,
+    rotate_image,
+    start_tracking,
+    unNormalize,
+)
 try:
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 except Exception:
     Axes3D = None
 from equilib.equi2pers.torch_impl import run as equi2pers_run
-from equilib.numpy_utils.rotation import create_rotation_matrices  # noqa
 # ======================================
 
 torch._dynamo.config.suppress_errors = True
@@ -89,7 +102,7 @@ def build_parser():
     # Options
     p.add_argument("--fps", type=float, default=30.0, help="FPS des sorties")
     p.add_argument("--device", default="cuda:0", help="cuda:0 / cpu")
-    p.add_argument("--max-frames", type=int, default=3000, help="Limiter le nb de frames")
+    p.add_argument("--max-frames", type=int, default=10000, help="Limiter le nb de frames")
     p.add_argument("--yolo", default="yolo_models/yolo11x-pose.pt",
                    help="Chemin du modèle YOLO pose")
     p.add_argument("--tracker", default="bytetrack.yaml", help="Tracker pour YOLO")
@@ -110,246 +123,13 @@ def build_parser():
     return p
 
 
-def compute_dynamic_fov_from_bbox(bbox, img_w=3840):
-    """
-    Compute dynamic FOV based on bbox size.
-    bbox = (cx, cy, w, h)
-    Returns FOV in degrees, clamped to [20°, 70°].
-    """
-    _, _, w, h = bbox
-    size = max(w, h)
-    s = size / img_w  # normalized scale
-
-    min_fov = 20.0
-    max_fov = 70.0
-
-    # Linear mapping: s = 0.30 → 70°, s = 0.0 → 20°
-    FOV = min_fov + (max_fov - min_fov) * (s / 0.30)
-    FOV = max(min_fov, min(FOV, max_fov))
-
-    return FOV
-
-
-
-# -------------------- Recorder (unchanged) --------------------
-
-class YOLOTrackedRecorder:
-    def __init__(self, model, out_path, fps=30.0, device="cuda:0", tracker="botsort.yaml", kp_conf_thresh=None):
-        self.model = model
-        self.out_path = str(out_path)
-        self.fps = float(fps)
-        self.device = device
-        self.tracker = tracker
-        self.kp_conf_thresh = kp_conf_thresh
-        self.writer = None
-        self.size = None  # (w, h)
-
-    def _ensure_writer(self, frame_bgr):
-        h, w = frame_bgr.shape[:2]
-        if self.writer is None:
-            self.size = (w, h)
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            self.writer = cv2.VideoWriter(self.out_path, fourcc, self.fps, (w, h))
-
-    def process(self, frame_bgr):
-        self._ensure_writer(frame_bgr)
-        results = self.model.track(
-            frame_bgr,
-            device=self.device,
-            tracker=self.tracker,
-            persist=True,
-            verbose=False
-        )[0]
-        im_annot = results.plot()
-        if im_annot.shape[1] != self.size[0] or im_annot.shape[0] != self.size[1]:
-            im_annot = cv2.resize(im_annot, self.size, interpolation=cv2.INTER_LINEAR)
-        self.writer.write(im_annot)
-        return results
-
-    def close(self):
-        if self.writer is not None:
-            self.writer.release()
-            self.writer = None
-
-# -------------------- Projection helpers (unchanged) --------------------
-# --- small helpers copied from your original august_parsed.py ---
-
-
-def ensure_parent_dir(path: Path):
-    """Create parent directory for a file path if it doesn’t exist."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-
-def derive_side_outputs(main_out: Path):
-    """
-    Given /path/out.mp4, return:
-      /path/out_tracked.mp4, /path/out_pseudo.mp4, /path/out.trc
-    """
-    stem = main_out.with_suffix("")  # /path/out
-    out_tracked = stem.with_name(stem.name + "_tracked").with_suffix(".mp4")
-    out_pseudo  = stem.with_name(stem.name + "_pseudo").with_suffix(".mp4")
-    out_trc     = stem.with_suffix(".trc")
-    return out_tracked, out_pseudo, out_trc
-
-
-def project_vertices_to_equirectangular(vertices, image_width, image_height):
-    vertices = np.asarray(vertices)
-    norms = np.linalg.norm(vertices, axis=1, keepdims=True)
-    directions = vertices / norms
-    x, y, z = directions[:, 0], directions[:, 1], directions[:, 2]
-    yaw = np.arctan2(x, z)
-    pitch = np.arcsin(y)
-    u = (yaw + np.pi) / (2 * np.pi) * image_width
-    v = ((pitch + np.pi / 2) / np.pi) * image_height
-    return np.stack([u, v], axis=1)
-
-def project_mesh_from_pseudo_to_equi(vertices_local, yaw_deg, pitch_deg, width, height):
-    yaw = np.deg2rad(yaw_deg)
-    pitch = np.deg2rad(pitch_deg)
-    R_yaw = np.array([[np.cos(yaw), 0, np.sin(yaw)],
-                      [0, 1, 0],
-                      [-np.sin(yaw), 0, np.cos(yaw)]])
-    R_pitch = np.array([[1, 0, 0],
-                        [0, np.cos(pitch), -np.sin(pitch)],
-                        [0, np.sin(pitch),  np.cos(pitch)]])
-    R_combined = R_yaw @ R_pitch
-    vertices_rotated = vertices_local @ R_combined.T
-    return project_vertices_to_equirectangular(vertices_rotated, width, height)
-
-# -------------------- Robust shmsrc reader (embedded) --------------------
-
-import gi
-gi.require_version('Gst', '1.0')
-from gi.repository import Gst
-
-import math
-
-def _pick_shm_paths(base: str):
-    yield base
-    for i in range(10):
-        yield f"{base}.{i}"
-
-class GstShmReader:
-    """Minimal, robust shmsrc → appsink BGR reader."""
-    def __init__(self, sock_base, w, h, fps, timeout_ms=3000):
-        Gst.init(None)
-        self.w, self.h = int(w), int(h)
-        self.pipeline = None
-        self.sink = None
-        self.bus = None
-        self._closed = False
-        self.try_pull_timeout_ns = 500_000_000  # 500ms
-
-        caps = "video/x-raw,format=BGR"
-        last_err = None
-
-        for path in _pick_shm_paths(sock_base):
-            deadline = time.time() + 3.0
-            while not os.path.exists(path) and time.time() < deadline:
-                time.sleep(0.05)
-            if not os.path.exists(path):
-                continue
-
-            pipe = (
-                f"shmsrc socket-path={path} is-live=true do-timestamp=true ! "
-                f"{caps} ! "
-                "appsink name=sink drop=true sync=false max-buffers=1 emit-signals=true"
-            )
-            try:
-                pl = Gst.parse_launch(pipe)
-                sink = pl.get_by_name("sink")
-                bus = pl.get_bus()
-                ret = pl.set_state(Gst.State.PLAYING)
-                if ret == Gst.StateChangeReturn.FAILURE:
-                    msg = bus.timed_pop_filtered(timeout_ms * Gst.MSECOND, Gst.MessageType.ERROR)
-                    if msg:
-                        err, dbg = msg.parse_error()
-                        last_err = (err, dbg)
-                        pl.set_state(Gst.State.NULL)
-                        continue
-                    pl.set_state(Gst.State.NULL)
-                    continue
-                self.pipeline, self.sink, self.bus = pl, sink, bus
-                print(f"[GstShmReader] Connected to {path}")
-                break
-            except Exception as e:
-                last_err = e
-                try: pl.set_state(Gst.State.NULL)
-                except Exception: pass
-                continue
-
-        if self.pipeline is None:
-            if isinstance(last_err, tuple):
-                err, dbg = last_err
-                raise RuntimeError(f"Failed to open shmsrc: {err.message} [{dbg}]")
-            raise RuntimeError(f"Failed to open any shmsrc under {sock_base}")
-
-        self._logged_size = False
-
-    def read(self):
-        if self._closed or self.pipeline is None:
-            return False, None
-        if self.bus:
-            msg = self.bus.pop_filtered(Gst.MessageType.ERROR | Gst.MessageType.EOS)
-            if msg:
-                return False, None
-        sample = self.sink.emit("try-pull-sample", self.try_pull_timeout_ns)
-        if not sample:
-            return False, None
-        w = h = None
-        caps = sample.get_caps()
-        if caps:
-            st = caps.get_structure(0)
-            if st:
-                w = st.get_value('width')
-                h = st.get_value('height')
-        buf = sample.get_buffer()
-        ok, mapinfo = buf.map(Gst.MapFlags.READ)
-        if not ok:
-            return False, None
-        arr = np.frombuffer(mapinfo.data, dtype=np.uint8)
-        pixels = arr.size // 3
-        if w is None or h is None:
-            h_guess = int(round(math.sqrt(max(pixels, 0) / 2)))
-            w_guess = 2 * h_guess
-            if w_guess * h_guess == pixels and h_guess > 0:
-                w, h = w_guess, h_guess
-            else:
-                w, h = self.w, self.h
-        expected = int(w) * int(h) * 3
-        if arr.size != expected:
-            buf.unmap(mapinfo)
-            return False, None
-        frame = arr.reshape((int(h), int(w), 3)).copy()
-        buf.unmap(mapinfo)
-        if not self._logged_size:
-            print(f"[GstShmReader] negotiated size: {w}x{h}")
-            self._logged_size = True
-        return True, frame
-
-    def close(self):
-        if self._closed:
-            return
-        self._closed = True
-        try:
-            if self.pipeline:
-                self.pipeline.set_state(Gst.State.PAUSED)
-                self.pipeline.set_state(Gst.State.READY)
-                self.pipeline.set_state(Gst.State.NULL)
-        finally:
-            self.pipeline = None
-            self.sink = None
-            try:
-                Gst.deinit()
-            except Exception:
-                pass
-
 # -------------------- MAIN (identical logic; only source differs) --------------------
 
 def main():
     args = build_parser().parse_args()
     if args.display_only:
-        cv2.namedWindow("markerless_live", cv2.WINDOW_NORMAL)
-        cv2.resizeWindow("markerless_live", 960, 480)
+        cv2.namedWindow("pseudo_camera", cv2.WINDOW_NORMAL)
+        cv2.resizeWindow("pseudo_camera", 512, 512)
 
     display_only = args.display_only
     write_video = not args.display_only and not args.no_video
@@ -479,12 +259,7 @@ def main():
                     t_pose_person = t_pose_person2
                     image_id = 1
 
-                ori_img = np.clip(frame, 0, 255).astype(np.uint8)
-                if display_only:
-                    preview = cv2.resize(ori_img, (960, 480))
-                    cv2.imshow("markerless_live", preview)
-                    if (cv2.waitKey(1) & 0xFF) == 27:  # ESC
-                        break
+                # In display-only mode we only show the pseudo-camera preview.
 
             elif tpose_found and not initialisation:
                 shifted_image_180 = rotate_image(frame, 180)
@@ -529,24 +304,7 @@ def main():
 
                 torch.cuda.synchronize() if "cuda" in device else None
                 start_camera = time.time()
-                # ---- Dynamic FOV based on bbox size ----
-                bbox = None
-                track_ids = (
-                    result.boxes.id.int().cpu().tolist()
-                    if (result is not None and result.boxes is not None and result.boxes.id is not None)
-                    else []
-                )
-                if track_ids:
-                    boxes_xywh = result.boxes.xywh.cpu().numpy()
-                    for idx, tid in enumerate(track_ids):
-                        if tid == id_a_suivre:
-                            bbox = boxes_xywh[idx]
-                            break
-
-                if bbox is not None:
-                    FOV = compute_dynamic_fov_from_bbox(bbox, img_w=args.frame_width)
-                else:
-                    FOV = 55.0   # fallback
+                FOV = 55.0
                 with torch.inference_mode():
                     pseudo_camera = equi2pers_run(
                         equi=preprocessed_equi_rendering,
@@ -557,7 +315,7 @@ def main():
                         }],
                         height=256,
                         width=256,
-                        fov_x=FOV,        # <--- DYNAMIC FOV HERE
+                        fov_x=FOV,
                         skew=0.0,
                         z_down=False,
                         mode="bilinear"
@@ -571,7 +329,7 @@ def main():
                 K, R, t = compute_camera_parameters(
                         input_tensor.size(2),
                         input_tensor.size(3),
-                        FOV,            # <---- USE dynamic FOV
+                        FOV,
                         rotate_frame,
                         pitch
                     )
@@ -621,7 +379,7 @@ def main():
 
 
 
-                if poses3d.shape[0] > 0:
+                if poses3d.shape[0] > 0 and not display_only:
                     projected_2d = project_mesh_from_pseudo_to_equi(
                         vertices3d, rotate_frame, pitch, args.frame_width, args.frame_height
                     )
@@ -640,11 +398,7 @@ def main():
                         center = tuple(int(x) for x in np.round(point).tolist())
                         cv2.circle(ori_img, center, 5, (0, 0, 255), -1)
 
-                if display_only:
-                    preview = cv2.resize(ori_img, (args.frame_width, args.frame_height))
-                    cv2.imshow("markerless_live", preview)
-                    if (cv2.waitKey(1) & 0xFF) == 27:
-                        break
+                # Do not render/show equirectangular preview in display-only mode.
                 
 # assumes vertices3d already in meters; if it's in millimeters, see below
                 vertices3d = vertices3d  / 1000.0

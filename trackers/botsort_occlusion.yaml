@@ -1,0 +1,23 @@
+# BoT-SORT tuned for stronger occlusion handling in live 360 tracking.
+# Use with: --tracker trackers/botsort_occlusion.yaml
+
+tracker_type: botsort
+
+# Detection thresholds
+track_high_thresh: 0.20
+track_low_thresh: 0.05
+new_track_thresh: 0.20
+
+# Keep lost tracks alive longer across occlusions (~2s at 30 FPS)
+track_buffer: 60
+
+# Association
+match_thresh: 0.70
+fuse_score: True
+gmc_method: sparseOptFlow
+
+# ReID (helps re-acquisition after full/near-full occlusion)
+proximity_thresh: 0.5
+appearance_thresh: 0.75
+with_reid: True
+model: auto

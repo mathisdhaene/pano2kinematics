@@ -3,7 +3,7 @@
 **Real-time markerless upper-body kinematics from a single 360° camera**, using
 **Neural Localizer Fields (NLF)** and **YOLO**.
 
-Repository: [https://github.com/mathisdhaene/pano2kinematics](https://github.com/mathisdhaene/pano2kinematics)
+Part of the **PANORAMICS** (Panoramic Analysis for Natural Observation and Real-time Assessment of Markerless Integrated Capture Systems) umbrella project.
 
 ---
 
@@ -219,19 +219,19 @@ EquiLib is vendored directly in the source tree to ensure reproducibility.
 
 ## 6. Running the pipeline (live)
 
-There are **two entry-point scripts**:
+There are **two live-related scripts**:
 
-* `live_cpu.py`
+* `legacy/live_cpu.py`
 * `live_gpu.py`
 
-Both share the same interface.
+`live_gpu.py` is the main entry point. The CPU script is kept in `legacy/` as a reference implementation.
 
 ---
 
 ### CPU version
 
 ```bash
-python3 live_cpu.py \
+python3 legacy/live_cpu.py \
   --live \
   --shm-socket /tmp/theta_bgr.sock \
   --fps 30 \
