@@ -1,11 +1,9 @@
-# PANORAMICS
+# pano2kinematics
 
-**Panoramic Analysis for Natural Observation and Real-time Assessment of Markerless Integrated Capture Systems**
 
 **Real-time markerless upper-body kinematics from a single 360° camera**, using
 **Neural Localizer Fields (NLF)** and **YOLO**.
 
-Legacy repository name: [pano2kinematics](https://github.com/mathisdhaene/pano2kinematics)
 
 ---
 
@@ -24,103 +22,52 @@ Legacy repository name: [pano2kinematics](https://github.com/mathisdhaene/pano2k
 
 * Linux (tested on Ubuntu 22.04 / 24.04)
 * Python **3.10**
+* **uv** for environment management
 * **CPU-only** supported (GPU optional)
-* No `sudo` required
-* `conda-forge` only (HPC / CNRS friendly)
+* No `sudo` required for the Python environment
+* System GStreamer / GI packages are required for live mode
 
 ---
 
 ## 1. Python environment
 
-### 1.1 Install Miniforge (once)
+### 1.1 Install uv (once)
 
 ```bash
-cd ~
-wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-bash Miniforge3-Linux-x86_64.sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
 Restart your terminal and verify:
 
 ```bash
-conda --version
+uv --version
 ```
 
 ---
 
-### 1.2 Configure conda (conda-forge only)
+### 1.2 Create the environment
+
+From the `deps/pano2kinematics` directory:
 
 ```bash
-cat > ~/.condarc <<'EOF'
-channels:
-  - conda-forge
-channel_priority: strict
-default_channels: []
-custom_channels: {}
-custom_multichannels: {}
-auto_activate_base: false
-EOF
+uv venv --python 3.10 --system-site-packages
+uv sync
 ```
+
+This will:
+
+* create `.venv` next to the project files
+* install all Python dependencies from `pyproject.toml` and `uv.lock`
+* keep the environment on Python 3.10
+* expose system GI bindings via `--system-site-packages`
+* replace the old conda/mamba workflow; `environment.yml` is historical now
 
 ---
 
-### 1.3 Install mamba (recommended)
+### 1.3 Sanity check
 
 ```bash
-conda install -n base -c conda-forge mamba
-```
-
----
-
-### 1.4 Create the environment
-
-The repository already provides a ready-to-use environment file.
-
-From the repository root:
-
-```bash
-mamba env create -f environment.yml
-conda activate py10
-```
-
----
-
-### 1.5 Install PyTorch
-
-#### CPU-only
-
-```bash
-mamba install -c conda-forge pytorch-cpu torchvision torchdata
-```
-
-Verify:
-
-```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
-
----
-
-### 1.6 Install pip-only dependencies
-
-```bash
-mamba install -c conda-forge pip setuptools wheel
-```
-
-```bash
-python -m pip install \
-  smplx \
-  pyrender==0.1.45 \
-  transformers \
-  ultralytics
-```
-
----
-
-### 1.7 Sanity check
-
-```bash
-python - <<'PY'
+uv run python - <<'PY'
 import torch, cv2, smplx, pyrender, transformers, ultralytics
 print("All imports OK")
 PY
@@ -132,17 +79,21 @@ PY
 
 The live pipeline uses **GStreamer** via Python GI bindings.
 
-Install inside the conda environment:
-
 ```bash
-conda activate py10
-mamba install -c conda-forge pygobject gst-python gstreamer
+sudo apt install --yes \
+  gstreamer1.0-tools \
+  gstreamer1.0-plugins-base \
+  gstreamer1.0-plugins-good \
+  gstreamer1.0-libav \
+  python3-gi \
+  python3-gi-cairo \
+  libgirepository1.0-dev
 ```
 
 Quick test:
 
 ```bash
-python - <<'PY'
+uv run python - <<'PY'
 import gi
 gi.require_version("Gst", "1.0")
 from gi.repository import Gst
@@ -233,7 +184,7 @@ There are **two live-related scripts**:
 ### CPU version
 
 ```bash
-python3 legacy/live_cpu.py \
+uv run python legacy/live_cpu.py \
   --live \
   --shm-socket /tmp/theta_bgr.sock \
   --fps 30 \
@@ -250,7 +201,7 @@ python3 legacy/live_cpu.py \
 ### GPU version
 
 ```bash
-python3 live_gpu.py \
+uv run python live_gpu.py \
   --live \
   --shm-socket /tmp/theta_bgr.sock \
   --frame-width 3840 \
