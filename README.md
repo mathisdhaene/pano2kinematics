@@ -1,9 +1,11 @@
-# pano2kinematics
+# PANORAMICS
+
+**Panoramic Analysis for Natural Observation and Real-time Assessment of Markerless Integrated Capture Systems**
 
 **Real-time markerless upper-body kinematics from a single 360° camera**, using
 **Neural Localizer Fields (NLF)** and **YOLO**.
 
-Part of the **PANORAMICS** (Panoramic Analysis for Natural Observation and Real-time Assessment of Markerless Integrated Capture Systems) umbrella project.
+Legacy repository name: [pano2kinematics](https://github.com/mathisdhaene/pano2kinematics)
 
 ---
 

@@ -65,6 +65,11 @@ torch._dynamo.config.verbose = False
 # Register torchvision custom ops before TorchScript (torchvision::nms)
 _ = torchvision.ops.nms
 
+# Marker indices in the 20-point subset used by this script.
+IDX_MC5 = 17
+IDX_MC2 = 18
+IDX_CLAG = 2
+
 # ====================================================
 #              GStreamer (needed for GstShmReader)
 # ====================================================
@@ -122,6 +127,8 @@ def build_parser():
                    help="Disable ALL video writing (still writes TRC if possible).")
     p.add_argument("--display", action="store_true",
                    help="Show OpenCV windows (equi + pseudo).")
+    p.add_argument("--debug-intermediate-2d", action="store_true",
+                   help="Overlay the intermediate NLF 2D cues on the pseudo view.")
 
     # TRC timing strategy (optional)
     p.add_argument("--trc-use-ffprobe", action="store_true",
@@ -138,6 +145,39 @@ def build_parser():
     )
 
     return p
+
+
+def _draw_keypoints_2d(image, points, color, radius=3, thickness=-1):
+    if image is None or points is None:
+        return image
+
+    pts = points.detach().cpu().numpy() if isinstance(points, torch.Tensor) else np.asarray(points)
+    if pts.ndim != 2 or pts.shape[1] < 2:
+        return image
+
+    h, w = image.shape[:2]
+    for pt in pts:
+        if not np.all(np.isfinite(pt[:2])):
+            continue
+        x = int(round(float(pt[0])))
+        y = int(round(float(pt[1])))
+        if 0 <= x < w and 0 <= y < h:
+            cv2.circle(image, (x, y), radius, color, thickness)
+    return image
+
+
+def _extract_intermediate_nlf_2d(model, input_tensor, weights_subset):
+    crop_model = model.crop_model
+    if input_tensor.device.type == "cuda":
+        input_tensor = input_tensor.to(dtype=torch.float16)
+    features = crop_model.get_features(input_tensor)
+    flip_flags = torch.zeros((features.shape[0],), dtype=torch.bool, device=features.device)
+    coords2d, coords3d_rel, uncertainties = crop_model.heatmap_head.decode_features_multi_same_weights(
+        features,
+        weights_subset,
+        flip_flags,
+    )
+    return coords2d, coords3d_rel, uncertainties
 
 
 # ====================================================
@@ -185,6 +225,9 @@ def main():
         cv2.resizeWindow("equi", 960, 480)
         cv2.namedWindow("pseudo", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("pseudo", 512, 512)
+        if args.debug_intermediate_2d:
+            cv2.namedWindow("nlf_2d", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("nlf_2d", 1024, 512)
 
     # ---- device ----
     device = args.device
@@ -210,6 +253,68 @@ def main():
     # YOLO for T-pose only (exactly like december_online_minimal)
     model_yolo = YOLO(args.yolo)
     model_yolo2 = YOLO(args.yolo)
+
+    # ---- Model warmup to reduce first-frame latency ----
+    print("[WARMUP] Warming up models...")
+    # Warmup NLF model
+    dummy_input = torch.randn(1, 3, 384, 384, device=device, dtype=torch.float32)
+    with torch.no_grad():
+        _ = model.estimate_poses_batched(
+            dummy_input,
+            boxes,
+            weights_subset,
+            intrinsic_matrix=None,
+            distortion_coeffs=None,
+            extrinsic_matrix=None,
+            world_up_vector=None,
+            default_fov_degrees=40.0,
+            internal_batch_size=1,
+            antialias_factor=1,
+            num_aug=1,
+            rot_aug_max_degrees=0.0,
+        )
+    # Second warmup to ensure full initialization
+    with torch.no_grad():
+        _ = model.estimate_poses_batched(
+            dummy_input,
+            boxes,
+            weights_subset,
+            intrinsic_matrix=None,
+            distortion_coeffs=None,
+            extrinsic_matrix=None,
+            world_up_vector=None,
+            default_fov_degrees=40.0,
+            internal_batch_size=1,
+            antialias_factor=1,
+            num_aug=1,
+            rot_aug_max_degrees=0.0,
+        )
+    if device.startswith('cuda'):
+        torch.cuda.synchronize()
+    # Warmup YOLO models
+    dummy_img = np.random.randint(0, 255, (384, 384, 3), dtype=np.uint8)
+    _ = model_yolo(dummy_img, verbose=False)
+    _ = model_yolo2(dummy_img, verbose=False)
+    # Warmup equi2pers
+    dummy_equi = torch.randn(1, 3, args.frame_height, args.frame_width, device=device, dtype=torch.float32)
+    with torch.no_grad():
+        _ = equi2pers_run(
+            equi=dummy_equi,
+            rots=[{
+                "yaw": 0.0,
+                "roll": 0.0,
+                "pitch": 0.0,
+            }],
+            height=384,
+            width=384,
+            fov_x=40.0,
+            skew=0.0,
+            z_down=False,
+            mode="bilinear",
+        )
+    if device.startswith('cuda'):
+        torch.cuda.synchronize()
+    print("[WARMUP] Done.")
 
     # ---- source: LIVE or MP4 ----
     reader = None
@@ -292,6 +397,7 @@ def main():
     ref_fov = None
     torso_indices = [3, 4, 5, 19]
     printed_vertices_shape = False
+    printed_intermediate_warning = False
 
     # TRC buffers
     vertices_list = []
@@ -380,13 +486,21 @@ def main():
 
             # ---------- PHASE 2: One-shot alignment ----------
             if tpose_found and not initialised:
+                t_start_phase2 = time.time()
+                print(f"[TIMING] Starting phase 2 alignment at frame {count}")
                 shifted_180 = rotate_image(frame, 180)
 
                 if image_id == 0:
+                    t_start_yolo = time.time()
                     result1 = model_yolo.track(
                         frame, persist=True, device=device, tracker=args.tracker, verbose=False
                     )[0]
+                    t_yolo = time.time() - t_start_yolo
+                    print(f"[TIMING] YOLO on original frame: {t_yolo:.3f}s")
+                    t_start_align = time.time()
                     initialised, rotate_frame, pitch = align_equi_to_tposed(result1, t_pose_person, frame_width=args.frame_width, frame_height=args.frame_height)
+                    t_align = time.time() - t_start_align
+                    print(f"[TIMING] align_equi_to_tposed: {t_align:.3f}s")
                     print(f"[ALIGN] image_id=0 rotate={rotate_frame:.2f} pitch={pitch:.2f}")
 
                     if yolo_writer is not None:
@@ -395,10 +509,16 @@ def main():
                             yolo_vis = cv2.resize(yolo_vis, (args.frame_width, args.frame_height))
                         yolo_writer.write(yolo_vis)
                 else:
+                    t_start_yolo2 = time.time()
                     result2 = model_yolo2.track(
                         shifted_180, persist=True, device=device, tracker=args.tracker, verbose=False
                     )[0]
+                    t_yolo2 = time.time() - t_start_yolo2
+                    print(f"[TIMING] YOLO on 180° frame: {t_yolo2:.3f}s")
+                    t_start_align = time.time()
                     initialised, rotate_frame, pitch = align_equi_to_tposed(result2, t_pose_person, frame_width=args.frame_width, frame_height=args.frame_height)
+                    t_align = time.time() - t_start_align
+                    print(f"[TIMING] align_equi_to_tposed: {t_align:.3f}s")
                     rotate_frame += 180.0
                     print(f"[ALIGN] image_id=1 rotate={rotate_frame:.2f} pitch={pitch:.2f}")
 
@@ -409,6 +529,8 @@ def main():
                         yolo_writer.write(yolo_vis)
 
                 rotate_frame = (rotate_frame + 180.0) % 360.0 - 180.0
+                t_phase2_total = time.time() - t_start_phase2
+                print(f"[TIMING] Phase 2 total: {t_phase2_total:.3f}s")
                 if initialised:
                     print("[ALIGN] Initialisation complete, entering NLF-only tracking.")
                 else:
@@ -420,9 +542,13 @@ def main():
 
             # ---------- PHASE 3: NLF-only tracking (NO YOLO) ----------
             county += 1
+            if county == 1:
+                t_start_phase3 = time.time()
+                print(f"[TIMING] Starting phase 3 NLF tracking at frame {count}")
 
             # 1) pseudo camera (IMPORTANT: run EquiLib on SAME device -> same behavior as minimal)
             equi_tensor = preprocess(frame_equi, device)
+            t_start_equi2pers = time.time()
             with torch.inference_mode():
                 pseudo_camera = equi2pers_run(
                     equi=equi_tensor,
@@ -438,6 +564,9 @@ def main():
                     z_down=False,
                     mode="bilinear",
                 )
+            t_equi2pers = time.time() - t_start_equi2pers
+            if county == 1:
+                print(f"[TIMING] First equi2pers: {t_equi2pers:.3f}s")
 
             # pseudo_camera already on device, just ensure float32
             input_tensor = pseudo_camera.to(dtype=torch.float32)
@@ -452,6 +581,7 @@ def main():
 
             R_np = np.asarray(R, dtype=np.float32)
 
+            t_start_nlf = time.time()
             with torch.inference_mode():
                 pred = model.estimate_poses_batched(
                     input_tensor,
@@ -467,6 +597,11 @@ def main():
                     num_aug=1,
                     rot_aug_max_degrees=0.0,
                 )
+            t_nlf = time.time() - t_start_nlf
+            if county == 1:
+                print(f"[TIMING] First NLF inference: {t_nlf:.3f}s")
+                t_phase3_total = time.time() - t_start_phase3
+                print(f"[TIMING] Phase 3 first frame total: {t_phase3_total:.3f}s")
 
             poses3d_all = pred["poses3d"][0].detach().cpu().numpy()
             poses2d_all = pred["poses2d"][0].detach().cpu().numpy()
@@ -477,6 +612,17 @@ def main():
                 poses2d_all = poses2d_all[None, ...]
             if unc_all.ndim == 1:
                 unc_all = unc_all[None, ...]
+
+            intermediate_pose2d = None
+            if args.debug_intermediate_2d:
+                try:
+                    with torch.inference_mode():
+                        interm_2d, _, _ = _extract_intermediate_nlf_2d(model, input_tensor, weights_subset)
+                    intermediate_pose2d = interm_2d[0].detach().cpu().numpy()
+                except Exception as e:
+                    if not printed_intermediate_warning:
+                        print(f"[DEBUG] Could not extract intermediate NLF 2D cues: {e}")
+                        printed_intermediate_warning = True
 
             picked = pick_best_nlf_candidate(poses2d_all, poses3d_all, unc_all)
             pose2d = None
@@ -574,9 +720,6 @@ def main():
                     rel_depth = float(np.clip(rel_depth, 0.35, 2.0))
                     torso_depth = float(ref_depth * rel_depth)
 
-                IDX_MC5 = 17
-                IDX_CLAG = 2
-
                 if county > 3 and torso_depth is not None and ref_depth is None:
                     ref_depth = float(torso_depth)
                     try:
@@ -633,19 +776,42 @@ def main():
             # ---------- Videos ----------
             pseudo_frame = None
             if pseudo_writer is not None or args.display:
-                pseudo_frame = pseudo_camera.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
-                pseudo_frame = (pseudo_frame * 255).astype(np.uint8).copy()
+                pseudo_base = pseudo_camera.squeeze(0).permute(1, 2, 0).detach().cpu().numpy()
+                pseudo_base = (pseudo_base * 255).astype(np.uint8).copy()
+                pseudo_frame = pseudo_base.copy()
                 pose2d_vis = pose2d if pose2d is not None else last_valid_pose2d
                 if pose2d_vis is None:
                     pose2d_vis = np.empty((0, 2), dtype=np.float32)
-                for pt in pose2d_vis:
-                    if not np.all(np.isfinite(pt)):
-                        continue
-                    x, y = int(pt[0]), int(pt[1])
-                    if 0 <= x < 384 and 0 <= y < 384:
-                        cv2.circle(pseudo_frame, (x, y), 2, (0, 0, 255), -1
-
+                _draw_keypoints_2d(pseudo_frame, pose2d_vis, (0, 0, 255), radius=2)
+                debug_frame = None
+                if args.display and args.debug_intermediate_2d:
+                    debug_frame = pseudo_base.copy()
+                    if intermediate_pose2d is not None:
+                        _draw_keypoints_2d(debug_frame, intermediate_pose2d, (0, 255, 0), radius=2)
+                        _draw_keypoints_2d(debug_frame, pose2d_vis, (255, 255, 0), radius=2)
+                        cv2.putText(
+                            debug_frame,
+                            "projected=cyan  intermediate=green",
+                            (8, 18),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (255, 255, 255),
+                            1,
+                            cv2.LINE_AA,
                         )
+                    else:
+                        cv2.putText(
+                            debug_frame,
+                            "intermediate NLF 2D unavailable",
+                            (8, 18),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5,
+                            (0, 0, 255),
+                            1,
+                            cv2.LINE_AA,
+                        )
+                if args.display and args.debug_intermediate_2d and debug_frame is not None:
+                    cv2.imshow("nlf_2d", cv2.resize(debug_frame, (1024, 512)))
 
             if pseudo_writer is not None and pseudo_frame is not None:
                 pseudo_writer.write(pseudo_frame)
